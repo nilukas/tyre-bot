@@ -68,6 +68,8 @@ Three settings in `.env` let you run the whole app on your PC without any Azure 
 
 Sign-in sessions stay in memory, so restarting the app just signs you in again.
 
+**Mock reference data:** [sql/seed_reference_tyres.sql](sql/seed_reference_tyres.sql) inserts 17 mock reference tyres covering new to at-limit plus damaged, with placeholder images labelled "MOCK". Start the app once so the tables exist, then run the script. It's safe to re-run, and section 3 of the script removes the rows again. To change the rows, edit and re-run [sql/make_mock_seed.ps1](sql/make_mock_seed.ps1).
+
 Example report:
 
 ```sql
