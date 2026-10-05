@@ -14,13 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import auth
-from .analysis import (
-    DISCLAIMER,
-    AnalysisUnavailable,
-    assess_tyre_photo,
-    build_claude_client,
-    chat_about_tyre,
-)
+from .analysis import DISCLAIMER, AnalysisUnavailable, build_advisor
 from .auth import AuthState, User, current_user, get_auth_state, get_session, require_admin
 from .config import get_settings
 from .identity import build_azure_credential
@@ -37,12 +31,11 @@ from .schemas import (
     TyreVisionAssessment,
     VehicleType,
 )
-from .storage import build_photo_store, new_id
+from .storage import build_data_store, new_id
 from .wear import estimate_remaining_life, summarise
 
 log = logging.getLogger("tyre_advisor")
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
-MAX_ANALYSES_PER_SESSION = 10
 MAX_CHAT_TURNS = 20
 
 settings = get_settings()
@@ -56,8 +49,10 @@ app = FastAPI(
     openapi_url=None if settings.is_production else "/openapi.json",
 )
 app.state.auth = auth.build_auth_state(settings, credential)
-app.state.store = build_photo_store(settings, credential)
-app.state.claude = build_claude_client(settings, credential)
+app.state.store = build_data_store(settings, credential)
+app.state.advisor = build_advisor(settings, credential)
+log.warning("Tyre Advisor starting: APP_ENV=%s DATA_BACKEND=%s AI_BACKEND=%s",
+            settings.app_env, settings.data_backend, settings.ai_backend)
 
 app.add_middleware(
     TrustedHostMiddleware,
@@ -158,17 +153,17 @@ def create_analysis(
     km_since_fitted: Annotated[int | None, Form(ge=0, le=300_000)] = None,
     tread_when_new_mm: Annotated[float | None, Form(ge=4, le=20)] = None,
     question: Annotated[str | None, Form(max_length=2000)] = None,
-    session: dict = Depends(get_session),
+    user: User = Depends(current_user),
     auth_state: AuthState = Depends(get_auth_state),
 ):
-    user = User(**session["user"])
     auth_state.analysis_limiter.check(user.user_id)
     jpeg = _read_upload(image)
+    store = app.state.store
 
     analysis_id = new_id()
-    app.state.store.save_upload(user.user_id, analysis_id, jpeg)
+    store.save_upload(user.user_id, analysis_id, jpeg)
 
-    assessment = assess_tyre_photo(app.state.claude, settings, app.state.store, jpeg, vehicle_type)
+    assessment = app.state.advisor.assess(store, jpeg, vehicle_type)
     estimate = estimate_remaining_life(
         assessment,
         legal_min_mm=settings.legal_min_tread_mm,
@@ -180,22 +175,15 @@ def create_analysis(
         tread_when_new_mm=tread_when_new_mm,
     )
 
-    history: list[dict] = []
+    store.save_analysis(user.user_id, analysis_id, vehicle_type.value,
+                        assessment.model_dump(mode="json"), estimate.model_dump(mode="json"))
+
     reply = None
     if question and question.strip():
-        reply = chat_about_tyre(app.state.claude, settings, assessment, estimate, history,
-                                question.strip())
-        history += [{"role": "user", "content": question.strip()},
-                    {"role": "assistant", "content": reply}]
-
-    analyses: dict = session["analyses"]
-    while len(analyses) >= MAX_ANALYSES_PER_SESSION:
-        analyses.pop(next(iter(analyses)))
-    analyses[analysis_id] = {
-        "assessment": assessment.model_dump(mode="json"),
-        "estimate": estimate.model_dump(mode="json"),
-        "history": history,
-    }
+        reply = app.state.advisor.chat(assessment, estimate, [], question.strip())
+        store.append_messages(user.user_id, analysis_id,
+                              [{"role": "user", "content": question.strip()},
+                               {"role": "assistant", "content": reply}])
     log.info("analysis %s verdict=%s confidence=%s", analysis_id, estimate.verdict.value,
              assessment.confidence.value)
 
@@ -204,22 +192,23 @@ def create_analysis(
 
 
 @app.post("/api/analyses/{analysis_id}/messages", response_model=ChatReply)
-def chat(analysis_id: str, body: ChatRequest, session: dict = Depends(get_session)):
-    record = session["analyses"].get(analysis_id)  # scoped to this user's session
+def chat(analysis_id: str, body: ChatRequest, user: User = Depends(current_user)):
+    store = app.state.store
+    record = store.get_analysis(user.user_id, analysis_id)  # owner-scoped lookup
     if record is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Analysis not found.")
     if len(record["history"]) >= MAX_CHAT_TURNS * 2:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS,
                             "This conversation is long. Please upload the photo again to start fresh.")
     question = body.message.strip()
-    reply = chat_about_tyre(
-        app.state.claude, settings,
+    reply = app.state.advisor.chat(
         TyreVisionAssessment.model_validate(record["assessment"]),
         RemainingLifeEstimate.model_validate(record["estimate"]),
         record["history"], question,
     )
-    record["history"] += [{"role": "user", "content": question},
-                          {"role": "assistant", "content": reply}]
+    store.append_messages(user.user_id, analysis_id,
+                          [{"role": "user", "content": question},
+                           {"role": "assistant", "content": reply}])
     return ChatReply(reply=reply)
 
 

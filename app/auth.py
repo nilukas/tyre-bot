@@ -193,7 +193,6 @@ def create_user_session(auth: AuthState, *, user_id: str, name: str, roles: list
     return auth.sessions.create({
         "user": {"user_id": user_id, "name": name, "roles": roles,
                  "csrf_token": secrets.token_urlsafe(32)},
-        "analyses": {},
     })
 
 

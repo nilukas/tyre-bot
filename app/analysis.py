@@ -1,8 +1,13 @@
-"""Claude vision analysis and follow-up chat (Claude on Microsoft Foundry)."""
+"""Claude vision analysis and follow-up chat.
+
+AI_BACKEND=foundry uses Claude on Microsoft Foundry; AI_BACKEND=mock is an offline fake
+for local testing (no Azure, no cost).
+"""
 
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 
 import anthropic
@@ -18,7 +23,7 @@ from .schemas import (
     TyreVisionAssessment,
     VehicleType,
 )
-from .storage import PhotoStore
+from .storage import DataStore
 
 
 class AnalysisUnavailable(RuntimeError):
@@ -125,7 +130,7 @@ def _reference_label(r: ReferenceTyre) -> str:
 def assess_tyre_photo(
     client: AnthropicFoundry,
     settings: Settings,
-    store: PhotoStore,
+    store: DataStore,
     customer_jpeg: bytes,
     vehicle_type: VehicleType,
 ) -> TyreVisionAssessment:
@@ -201,3 +206,63 @@ def chat_about_tyre(
     if not text:
         raise AnalysisUnavailable("The assistant returned an empty answer.")
     return text
+
+
+# --------------------------------------------------------------------------
+# Advisors: the one object main.py talks to
+# --------------------------------------------------------------------------
+
+
+class FoundryAdvisor:
+    def __init__(self, settings: Settings, credential) -> None:
+        self.settings = settings
+        self.client = build_claude_client(settings, credential)
+
+    def assess(self, store: DataStore, jpeg: bytes, vehicle_type: VehicleType) -> TyreVisionAssessment:
+        return assess_tyre_photo(self.client, self.settings, store, jpeg, vehicle_type)
+
+    def chat(self, assessment: TyreVisionAssessment, estimate: RemainingLifeEstimate,
+             history: list[dict], question: str) -> str:
+        return chat_about_tyre(self.client, self.settings, assessment, estimate, history, question)
+
+
+class MockAdvisor:
+    """Offline stand-in for local testing. It does NOT look at the photo.
+
+    The tread depth is derived from a hash of the image bytes, so different photos give
+    different (but repeatable) results across the whole verdict range.
+    """
+
+    def assess(self, store: DataStore, jpeg: bytes, vehicle_type: VehicleType) -> TyreVisionAssessment:
+        h = hashlib.sha256(jpeg).digest()
+        depth = round(1.4 + (h[0] / 255) * 6.8, 1)  # 1.4 mm .. 8.2 mm
+        skew = round((h[1] / 255) * 1.5, 1)  # some photos get uneven wear
+        refs = select_references(store.list_references(), 3)
+        return TyreVisionAssessment(
+            is_tyre_photo=True,
+            image_usable=True,
+            image_issues=[],
+            tread_depth={"inner_mm": max(0.0, depth - skew), "center_mm": depth, "outer_mm": depth},
+            depth_uncertainty_mm=0.8,
+            wear_pattern="inner_edge" if skew >= 1.0 else "even",
+            wear_indicator="flush" if depth <= 1.6 else "well_above",
+            defects=[],
+            dot_code="",
+            manufacture_year=0,
+            manufacture_week=0,
+            most_similar_reference_ids=[r.id for r in refs],
+            confidence="medium",
+            observations=f"[MOCK AI - photo not really analysed] Simulated tread depth about {depth} mm.",
+        )
+
+    def chat(self, assessment: TyreVisionAssessment, estimate: RemainingLifeEstimate,
+             history: list[dict], question: str) -> str:
+        return (f"[MOCK AI] You asked: \"{question[:200]}\". Verdict: {estimate.verdict.value}. "
+                f"About {estimate.km_to_legal_limit:,} km left before the legal limit "
+                f"({estimate.km_to_legal_limit_low:,}-{estimate.km_to_legal_limit_high:,} km).")
+
+
+def build_advisor(settings: Settings, credential) -> FoundryAdvisor | MockAdvisor:
+    if settings.ai_backend == "mock":
+        return MockAdvisor()
+    return FoundryAdvisor(settings, credential)

@@ -37,13 +37,57 @@ The AI only reports **what it sees**. The kilometre numbers are calculated in Py
 | [app/analysis.py](app/analysis.py) | Claude vision prompt, reference selection, follow-up chat |
 | [app/wear.py](app/wear.py) | Remaining-km calculator and safety rules |
 | [app/images.py](app/images.py) | Upload validation (OWASP file-upload guidance) |
-| [app/storage.py](app/storage.py) | Blob Storage, or a local folder in development |
+| [app/storage.py](app/storage.py) | Storage interface + Blob Storage and local-folder backends |
+| [app/sqlserver_store.py](app/sqlserver_store.py) | Local SQL Server backend, auto-creates the database and tables |
 | [static/](static/) | Customer chat page (`/`) and staff reference library (`/admin`) |
 | [tests/](tests/) | Wear rules, image safety, and a check that the models match the OpenAPI contract |
 
+## Local testing switches (no Azure, no cost)
+
+Three settings in `.env` let you run the whole app on your PC without any Azure or paid service:
+
+| Setting | Values | What it does |
+|---|---|---|
+| `DATA_BACKEND` | `sqlserver` | All data in a local SQL Server database. **Database, tables and indexes are created automatically on startup.** |
+| | `local_files` | All data in `./data` as `.jpg` and `.json` files. Zero setup. |
+| | `azure_blob` | Azure Blob Storage (production). |
+| `AI_BACKEND` | `mock` | Fake AI that works offline and is free. It does **not** really look at the photo: the tread depth comes from a hash of the image, so different photos give different but repeatable results. Use it to test screens, the database and the km rules. |
+| | `foundry` | Real Claude analysis on Microsoft Foundry (billed). |
+| `DEV_AUTH_BYPASS` | `true` | Signs you in as a local admin without Entra ID. |
+
+`sqlserver`, `local_files`, `mock` and `DEV_AUTH_BYPASS` are **refused at startup unless `APP_ENV=development`**, so they can't be switched on in production by accident. The startup log prints the active switches.
+
+### What's stored in SQL Server
+
+| Table | Contents |
+|---|---|
+| `reference_tyres` | Staff reference photos (`VARBINARY`) plus labels: condition, measured tread depth, km, size, notes |
+| `customer_uploads` | Customer photos, keyed by the customer's user ID |
+| `analyses` | The AI assessment and km estimate as JSON, plus `verdict`, `min_tread_mm`, `km_to_legal_limit` and `confidence` columns for easy reporting |
+| `chat_messages` | Every question and answer, linked to its analysis |
+
+Sign-in sessions stay in memory, so restarting the app just signs you in again.
+
+Example report:
+
+```sql
+SELECT verdict, COUNT(*) AS checks, AVG(km_to_legal_limit) AS avg_km_left
+FROM dbo.analyses
+WHERE created_at >= DATEADD(day, -30, SYSUTCDATETIME())
+GROUP BY verdict;
+```
+
+### SQL Server setup (one time)
+
+1. Install **SQL Server 2022 Express** or **Developer** edition. Both are free. Keep the default instance name `SQLEXPRESS`, or change `SQLSERVER_SERVER` to match.
+2. Make sure the SQL Server service is running.
+3. That's it. The app connects with **Windows authentication** (your Windows login, no password) and creates the `TyreAdvisor` database on first start. Your Windows account needs permission to create databases, which the installing user has by default.
+
+The connection is encrypted. `SQLSERVER_TRUST_SERVER_CERTIFICATE=true` accepts the self-signed certificate of a local install; never use it against a shared or remote server.
+
 ## Run locally
 
-Requires Python 3.10+ and the Azure CLI. There are no keys: locally the app uses your `az login`.
+Requires Python 3.10+. With `AI_BACKEND=mock` you don't need Azure at all. For real analysis (`AI_BACKEND=foundry`) you also need the Azure CLI and `az login`. There are still no keys: the app uses your login.
 
 ```bash
 python -m venv .venv
@@ -55,13 +99,10 @@ python -m venv .venv
 pip install -r requirements-dev.txt
 ```
 ```bash
-az login
-```
-```bash
 copy .env.example .env
 ```
 
-Edit `.env` and set `FOUNDRY_RESOURCE`. Your own account needs the **Foundry User** (formerly Azure AI User) role on that resource. `DEV_AUTH_BYPASS=true` signs you in as a local admin, and only works with `APP_ENV=development`.
+The template is already set up for fully offline testing (`DATA_BACKEND=sqlserver`, `AI_BACKEND=mock`, `DEV_AUTH_BYPASS=true`). When you want real AI answers, set `AI_BACKEND=foundry` and `FOUNDRY_RESOURCE`, then run `az login`. Your account needs the **Foundry User** (formerly Azure AI User) role on that resource.
 
 ```bash
 uvicorn app.main:app --reload --env-file .env
@@ -69,6 +110,8 @@ uvicorn app.main:app --reload --env-file .env
 ```bash
 pytest
 ```
+
+The SQL Server test is skipped by default. Run it against a throwaway `TyreAdvisorTest` database by setting the environment variable `TEST_SQLSERVER=1`.
 
 Open http://localhost:8000. First go to **/admin** and add 10–20 labelled photos covering new, half-worn, at-the-limit and damaged tyres. Then try the customer page.
 
@@ -101,7 +144,7 @@ Open http://localhost:8000. First go to **/admin** and add 10–20 labelled phot
 
 ## Before going live
 
-- **Multiple instances:** sessions and the rate limiter are in memory. With more than one instance, move them to **Azure Cache for Redis** with Entra ID auth.
+- **Multiple instances:** sessions and the rate limiter are in memory. With the `azure_blob` backend, analyses and chat history are in memory too. For production, move analyses to **Azure Cosmos DB** and sessions to **Azure Cache for Redis**, both with Entra ID auth and no keys.
 - **Accuracy:** photo estimates of tread depth are typically within about ±1 mm. That is fine for "about 20,000 km left", not for a legal certificate. Ask customers to put a coin or gauge in the groove. Build an evaluation set: 50+ photos with gauge-measured depths, then compare the bot's estimates and tune the prompt or reference set.
 - **Legal minimum:** set `LEGAL_MIN_TREAD_MM` for your country (1.6 mm is common for cars).
 - **Disclaimer:** keep the "AI estimate, not a professional inspection" message.

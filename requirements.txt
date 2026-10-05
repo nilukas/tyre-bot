@@ -7,3 +7,4 @@ fastapi>=0.115
 uvicorn[standard]>=0.32
 python-multipart>=0.0.18  # required by FastAPI for file uploads
 pillow>=11.0              # image validation / re-encoding
+mssql-python>=1.15        # Microsoft: SQL Server driver (only used when DATA_BACKEND=sqlserver)

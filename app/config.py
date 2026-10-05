@@ -36,11 +36,20 @@ class Settings:
     managed_identity_client_id: str
     admin_app_role: str  # App role required to manage the reference library
 
+    # --- Switches -----------------------------------------------------------
+    # DATA_BACKEND: "azure_blob" (production) | "sqlserver" (local SQL Server) | "local_files"
+    data_backend: str
+    # AI_BACKEND: "foundry" (Claude on Microsoft Foundry) | "mock" (offline fake, no cost)
+    ai_backend: str
+
     # --- Storage ------------------------------------------------------------
-    storage_account_url: str  # https://<account>.blob.core.windows.net ; empty = local disk (dev only)
+    storage_account_url: str  # https://<account>.blob.core.windows.net
     reference_container: str
     upload_container: str
     local_data_dir: str
+    sqlserver_server: str  # e.g. localhost\SQLEXPRESS
+    sqlserver_database: str
+    sqlserver_trust_server_certificate: bool
 
     # --- Tyre physics defaults ---------------------------------------------
     legal_min_tread_mm: float
@@ -65,27 +74,51 @@ class Settings:
         return f"{self.public_base_url.rstrip('/')}/auth/callback"
 
 
+DATA_BACKENDS = {"azure_blob", "sqlserver", "local_files"}
+AI_BACKENDS = {"foundry", "mock"}
+DEV_ONLY_BACKENDS = {"sqlserver", "local_files", "mock"}
+
+
 @lru_cache
 def get_settings() -> Settings:
     app_env = _env("APP_ENV", "production")
+    is_dev = app_env == "development"
     dev_bypass = _env("DEV_AUTH_BYPASS", "false").lower() == "true"
-    if dev_bypass and app_env != "development":
-        raise RuntimeError("DEV_AUTH_BYPASS is only allowed when APP_ENV=development")
+
+    storage_url = _env("STORAGE_ACCOUNT_URL", "")
+    data_backend = _env("DATA_BACKEND", "azure_blob" if storage_url else "local_files").lower()
+    ai_backend = _env("AI_BACKEND", "foundry").lower()
+    if data_backend not in DATA_BACKENDS:
+        raise RuntimeError(f"DATA_BACKEND must be one of {sorted(DATA_BACKENDS)}")
+    if ai_backend not in AI_BACKENDS:
+        raise RuntimeError(f"AI_BACKEND must be one of {sorted(AI_BACKENDS)}")
+
+    if not is_dev:
+        if dev_bypass:
+            raise RuntimeError("DEV_AUTH_BYPASS is only allowed when APP_ENV=development")
+        for name, value in (("DATA_BACKEND", data_backend), ("AI_BACKEND", ai_backend)):
+            if value in DEV_ONLY_BACKENDS:
+                raise RuntimeError(f"{name}={value} is only allowed when APP_ENV=development")
 
     entra_required = not dev_bypass
     return Settings(
         app_env=app_env,
         public_base_url=_env("PUBLIC_BASE_URL", "http://localhost:8000"),
-        foundry_resource=_env("FOUNDRY_RESOURCE", required=True),
+        data_backend=data_backend,
+        ai_backend=ai_backend,
+        foundry_resource=_env("FOUNDRY_RESOURCE", required=ai_backend == "foundry"),
         claude_deployment=_env("CLAUDE_DEPLOYMENT", "claude-opus-5"),
         entra_authority=_env("ENTRA_AUTHORITY", required=entra_required),
         entra_client_id=_env("ENTRA_CLIENT_ID", required=entra_required),
         managed_identity_client_id=_env("MANAGED_IDENTITY_CLIENT_ID", required=entra_required),
         admin_app_role=_env("ADMIN_APP_ROLE", "Tyre.Admin"),
-        storage_account_url=_env("STORAGE_ACCOUNT_URL", ""),
+        storage_account_url=_env("STORAGE_ACCOUNT_URL", "", required=data_backend == "azure_blob"),
         reference_container=_env("REFERENCE_CONTAINER", "tyre-references"),
         upload_container=_env("UPLOAD_CONTAINER", "tyre-uploads"),
         local_data_dir=_env("LOCAL_DATA_DIR", "./data"),
+        sqlserver_server=_env("SQLSERVER_SERVER", r"localhost\SQLEXPRESS"),
+        sqlserver_database=_env("SQLSERVER_DATABASE", "TyreAdvisor"),
+        sqlserver_trust_server_certificate=_env("SQLSERVER_TRUST_SERVER_CERTIFICATE", "true").lower() == "true",
         legal_min_tread_mm=float(_env("LEGAL_MIN_TREAD_MM", "1.6")),
         recommended_min_tread_mm=float(_env("RECOMMENDED_MIN_TREAD_MM", "3.0")),
         default_new_tread_mm=float(_env("DEFAULT_NEW_TREAD_MM", "8.0")),
