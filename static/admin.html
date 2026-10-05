@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reference Library</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/common.js" defer></script>
+  <script src="/static/admin.js" defer></script>
+</head>
+<body>
+  <header class="bar">
+    <h1>Reference library</h1>
+    <nav><a href="/">Customer chat</a> <button id="logout" type="button" class="link">Sign out</button></nav>
+  </header>
+  <main>
+    <p id="denied" class="card" hidden>Staff access only. <a href="/auth/login">Sign in</a> with a staff account.</p>
+
+    <section id="admin" hidden>
+      <form id="add" class="card">
+        <h2>Add a labelled tyre photo</h2>
+        <p class="muted">Measure the tread with a gauge at its shallowest point. These photos teach the bot what each wear level looks like.</p>
+        <label>Photo <input type="file" name="image" accept="image/jpeg,image/png,image/webp" required></label>
+        <div class="row">
+          <label>Condition
+            <select name="condition" required>
+              <option value="new">New</option>
+              <option value="good">Good</option>
+              <option value="worn">Worn</option>
+              <option value="at_limit">At legal limit</option>
+              <option value="damaged">Damaged</option>
+            </select>
+          </label>
+          <label>Measured tread depth (mm)
+            <input type="number" name="tread_depth_mm" min="0" max="20" step="0.1" required>
+          </label>
+          <label>Km driven (optional)
+            <input type="number" name="km_driven" min="0" max="500000" step="100">
+          </label>
+        </div>
+        <div class="row">
+          <label>Tyre size (optional) <input type="text" name="tyre_size" maxlength="40" placeholder="205/55 R16"></label>
+          <label>Brand / model (optional) <input type="text" name="brand_model" maxlength="80"></label>
+        </div>
+        <label>Notes (optional) <input type="text" name="notes" maxlength="500" placeholder="e.g. inner-edge wear from misalignment"></label>
+        <button type="submit">Add reference</button>
+        <p id="add-status" class="muted" role="status"></p>
+      </form>
+
+      <section class="card">
+        <h2>Library (<span id="count">0</span>)</h2>
+        <ul id="refs" class="grid"></ul>
+      </section>
+    </section>
+  </main>
+</body>
+</html>

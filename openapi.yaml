@@ -1,0 +1,259 @@
+openapi: 3.1.0
+info:
+  title: Tyre Advisor API
+  version: 1.0.0
+  description: |
+    Contract for the Tyre Advisor BFF. This file is the source of truth; the FastAPI
+    implementation and any generated clients (e.g. Microsoft Kiota) follow it.
+
+    Authentication: browser sign-in via Entra ID (`GET /auth/login`) creates an opaque
+    server-side session in the `__Host-tyre_session` cookie. Every state-changing request
+    must also send the `X-CSRF-Token` header returned by `GET /api/me`.
+servers:
+  - url: https://tyres.example.com
+security:
+  - sessionCookie: []
+paths:
+  /api/me:
+    get:
+      operationId: getMe
+      summary: Current user and CSRF token
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Me" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /auth/logout:
+    post:
+      operationId: logout
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      responses:
+        "204": { description: Signed out }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/analyses:
+    post:
+      operationId: createAnalysis
+      summary: Upload a customer tyre photo and get condition + remaining km
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [image]
+              properties:
+                image: { type: string, format: binary, description: "JPEG/PNG/WebP, max 10 MB" }
+                vehicle_type: { $ref: "#/components/schemas/VehicleType" }
+                km_since_fitted: { type: integer, minimum: 0, maximum: 300000 }
+                tread_when_new_mm: { type: number, minimum: 4, maximum: 20 }
+                question: { type: string, maxLength: 2000 }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/AnalysisResult" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Invalid" }
+        "429": { $ref: "#/components/responses/TooMany" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/analyses/{analysisId}/messages:
+    post:
+      operationId: askAboutAnalysis
+      summary: Ask a follow-up question about an analysed tyre
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      parameters:
+        - { name: analysisId, in: path, required: true, schema: { type: string, pattern: "^[0-9a-f]{32}$" } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/ChatRequest" } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/ChatReply" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooMany" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/references:
+    get:
+      operationId: listReferences
+      summary: List labelled reference photos (staff, app role Tyre.Admin)
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/ReferenceList" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      operationId: createReference
+      summary: Add a labelled new/used tyre photo (staff)
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [image, condition, tread_depth_mm]
+              properties:
+                image: { type: string, format: binary }
+                condition: { $ref: "#/components/schemas/ReferenceCondition" }
+                tread_depth_mm: { type: number, minimum: 0, maximum: 20 }
+                km_driven: { type: integer, minimum: 0, maximum: 500000 }
+                tyre_size: { type: string, maxLength: 40, pattern: "^[0-9A-Za-z /.\\-]*$" }
+                brand_model: { type: string, maxLength: 80 }
+                notes: { type: string, maxLength: 500 }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/ReferenceTyre" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Invalid" }
+
+  /api/references/{refId}:
+    delete:
+      operationId: deleteReference
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      parameters:
+        - { name: refId, in: path, required: true, schema: { type: string, pattern: "^[0-9a-f]{32}$" } }
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/references/{refId}/image:
+    get:
+      operationId: getReferenceImage
+      parameters:
+        - { name: refId, in: path, required: true, schema: { type: string, pattern: "^[0-9a-f]{32}$" } }
+      responses:
+        "200": { description: JPEG image, content: { image/jpeg: { schema: { type: string, format: binary } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+components:
+  securitySchemes:
+    sessionCookie: { type: apiKey, in: cookie, name: __Host-tyre_session }
+    csrfHeader: { type: apiKey, in: header, name: X-CSRF-Token }
+
+  responses:
+    Unauthorized: { description: Not signed in, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    Forbidden: { description: Missing role or CSRF token, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    NotFound: { description: Not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    Invalid: { description: Invalid input or image, content: { application/json: { schema: {} } } }
+    TooMany: { description: Rate limited, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    Unavailable: { description: AI service unavailable, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  schemas:
+    Error:
+      type: object
+      required: [detail]
+      properties: { detail: { type: string } }
+
+    Me:
+      type: object
+      required: [name, is_admin, csrf_token]
+      properties:
+        name: { type: string }
+        is_admin: { type: boolean }
+        csrf_token: { type: string }
+
+    VehicleType: { type: string, enum: [car, suv, van, light_truck, motorcycle], default: car }
+    ReferenceCondition: { type: string, enum: [new, good, worn, at_limit, damaged] }
+    Verdict: { type: string, enum: [ok, monitor, replace_soon, replace_now, unable_to_assess] }
+
+    TreadDepths:
+      type: object
+      required: [inner_mm, center_mm, outer_mm]
+      properties:
+        inner_mm: { type: number }
+        center_mm: { type: number }
+        outer_mm: { type: number }
+
+    Defect:
+      type: object
+      required: [type, location, severity, description]
+      properties:
+        type: { type: string, enum: [sidewall_bulge, cords_exposed, cut_or_gash, puncture_object, cracking_dry_rot, tread_separation, chunking, bead_damage, other] }
+        location: { type: string, enum: [tread, shoulder, sidewall, bead, unknown] }
+        severity: { type: string, enum: [minor, major, critical] }
+        description: { type: string }
+
+    TyreVisionAssessment:
+      type: object
+      required: [is_tyre_photo, image_usable, image_issues, tread_depth, depth_uncertainty_mm, wear_pattern,
+                 wear_indicator, defects, dot_code, manufacture_year, manufacture_week,
+                 most_similar_reference_ids, confidence, observations]
+      properties:
+        is_tyre_photo: { type: boolean }
+        image_usable: { type: boolean }
+        image_issues: { type: array, items: { type: string } }
+        tread_depth: { $ref: "#/components/schemas/TreadDepths" }
+        depth_uncertainty_mm: { type: number }
+        wear_pattern: { type: string, enum: [even, center_wear, both_edges, inner_edge, outer_edge, cupping, feathering, flat_spot, unknown] }
+        wear_indicator: { type: string, enum: [not_visible, well_above, near, flush] }
+        defects: { type: array, items: { $ref: "#/components/schemas/Defect" } }
+        dot_code: { type: string }
+        manufacture_year: { type: integer }
+        manufacture_week: { type: integer }
+        most_similar_reference_ids: { type: array, items: { type: string } }
+        confidence: { type: string, enum: [low, medium, high] }
+        observations: { type: string }
+
+    RemainingLifeEstimate:
+      type: object
+      required: [verdict, min_tread_mm, legal_min_tread_mm, km_to_legal_limit, km_to_legal_limit_low,
+                 km_to_legal_limit_high, km_to_recommended_limit, km_per_mm_used, wear_rate_source,
+                 warnings, advice]
+      properties:
+        verdict: { $ref: "#/components/schemas/Verdict" }
+        min_tread_mm: { type: number }
+        legal_min_tread_mm: { type: number }
+        km_to_legal_limit: { type: integer }
+        km_to_legal_limit_low: { type: integer }
+        km_to_legal_limit_high: { type: integer }
+        km_to_recommended_limit: { type: integer }
+        km_per_mm_used: { type: number }
+        wear_rate_source: { type: string }
+        warnings: { type: array, items: { type: string } }
+        advice: { type: array, items: { type: string } }
+
+    AnalysisResult:
+      type: object
+      required: [analysis_id, assessment, estimate, summary, disclaimer]
+      properties:
+        analysis_id: { type: string }
+        assessment: { $ref: "#/components/schemas/TyreVisionAssessment" }
+        estimate: { $ref: "#/components/schemas/RemainingLifeEstimate" }
+        summary: { type: string }
+        reply: { type: [string, "null"] }
+        disclaimer: { type: string }
+
+    ChatRequest:
+      type: object
+      required: [message]
+      properties: { message: { type: string, minLength: 1, maxLength: 2000 } }
+
+    ChatReply:
+      type: object
+      required: [reply]
+      properties: { reply: { type: string } }
+
+    ReferenceTyre:
+      type: object
+      required: [id, condition, tread_depth_mm, created_by, created_at]
+      properties:
+        id: { type: string }
+        condition: { $ref: "#/components/schemas/ReferenceCondition" }
+        tread_depth_mm: { type: number }
+        km_driven: { type: [integer, "null"] }
+        tyre_size: { type: [string, "null"] }
+        brand_model: { type: [string, "null"] }
+        notes: { type: [string, "null"] }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+
+    ReferenceList:
+      type: object
+      required: [items]
+      properties: { items: { type: array, items: { $ref: "#/components/schemas/ReferenceTyre" } } }

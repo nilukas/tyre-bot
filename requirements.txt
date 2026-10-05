@@ -1,0 +1,9 @@
+# Runtime
+anthropic>=1.11           # Anthropic official SDK (AnthropicFoundry client)
+azure-identity>=1.19      # Microsoft: Managed Identity / az login credentials
+azure-storage-blob>=12.23 # Microsoft: Blob Storage
+msal>=1.31                # Microsoft: Entra ID confidential client (BFF)
+fastapi>=0.115
+uvicorn[standard]>=0.32
+python-multipart>=0.0.18  # required by FastAPI for file uploads
+pillow>=11.0              # image validation / re-encoding
